@@ -9,14 +9,42 @@
 
 ## 功能
 
-- **数据来源**：rtp2httpd 的 access_log CSV（需在 rtp2httpd 配置中启用
-  `access_log`，并配合 [lxzlxz309/rtp2httpd](https://github.com/lxzlxz309/rtp2httpd)
-  的 010 补丁——日志末列带会话开始时间戳，用于精确计算收视时长）。
+- **数据来源**：rtp2httpd 的 access_log CSV（格式见下文「运行条件」）。
 - **统计呈现**：20 行排行表（带序号，最新最大），纯 CSS 条形图（无 chart.js 等外部库）。
 - **内网判定**：按 A/B/C 类保留地址（`10.*` / `172.*` / `192.168.*`）区分内网客户端，
   不计入跨网段统计干扰。
 - **后端**：ucode rpcd 插件（`/usr/share/rpcd/ucode/iptvstats`），前端 JS view 同包分发，
   不依赖旧 20086 CGI 入口。
+
+## 运行条件：rtp2httpd 日志输出格式
+
+iptvstats 直接解析 rtp2httpd 的 access_log，**日志必须是逗号分隔的 CSV**，
+列顺序固定为：
+
+| 列 | 含义 | 示例 |
+| --- | --- | --- |
+| 1 | 客户端地址（纯 IP，或 `IP:端口`；IPv6 带 `[ ]` 括号。解析时自动剥离端口/括号） | `192.168.1.5` / `192.168.1.5:34567` |
+| 2 | 时间（ISO-8601，含时区偏移） | `2026-10-30T01:06:52+08:00` |
+| 3 | 频道 URL（`service_url`；`rtp://...` 自动按 m3u 映射为频道名，匹配不到则显示原样） | `rtp://228.1.1.174:4120` |
+| 4（可选） | **会话开始时间**（ISO-8601）——仅会话结束行带此列 | `2026-10-30T01:06:40+08:00` |
+
+- **3 列行 = 会话开始**；**4 列行 = 会话结束**，时长 = 第 2 列 − 第 4 列（精确计算）。
+- 只有开始行、没有结束行（如进程崩溃）时走**推断规则**：同一客户端相邻开始行间隔 >60s
+  按前置频道计时长；末条距当前时间 >60s 计为"看到现在"（单段时长有上限）。
+- 第 4 列由 [lxzlxz309/rtp2httpd](https://github.com/lxzlxz309/rtp2httpd)
+  的 **010 补丁**（session-end 日志行）输出，未安装该补丁则全部走推断规则。
+
+### 对应 rtp2httpd 配置（`/etc/config/rtp2httpd`）
+
+```
+config instance 'iptv'
+    option access_log '/path/to/rtp2httpd-access.csv'
+    option log_format '$client_addr,$time_iso8601,$service_url'
+```
+
+⚠️ **必须显式配置 `log_format` 为逗号分隔的 3 列格式**。rtp2httpd 默认格式
+`$client_addr [$time_iso8601] "$service_url" $service_type "$upstream_url"`
+带空格/引号/方括号，iptvstats **无法解析**。
 
 ## 仓库结构
 
