@@ -25,7 +25,7 @@ iptvstats 直接解析 rtp2httpd 的 access_log，**日志必须是逗号分隔�
 | --- | --- | --- |
 | 1 | 客户端地址（纯 IP，或 `IP:端口`；IPv6 带 `[ ]` 括号。解析时自动剥离端口/括号） | `192.168.1.5` / `192.168.1.5:34567` |
 | 2 | 时间（ISO-8601，含时区偏移） | `2026-10-30T01:06:52+08:00` |
-| 3 | 频道 URL（`service_url`；`rtp://...` 自动按 m3u 映射为频道名，匹配不到则显示原样） | `rtp://228.1.1.174:4120` |
+| 3 | **上游组播地址**（`$upstream_url`；`rtp://...`，按 m3u 字典映射为频道名，未命中则显示原样） | `rtp://228.1.1.174:4120` |
 | 4（可选） | **会话开始时间**（ISO-8601）——仅会话结束行带此列 | `2026-10-30T01:06:40+08:00` |
 
 - **3 列行 = 会话开始**；**4 列行 = 会话结束**，时长 = 第 2 列 − 第 4 列（精确计算）。
@@ -39,12 +39,38 @@ iptvstats 直接解析 rtp2httpd 的 access_log，**日志必须是逗号分隔�
 ```
 config instance 'iptv'
     option access_log '/path/to/rtp2httpd-access.csv'
-    option log_format '$client_addr,$time_iso8601,$service_url'
+    option log_format '$client_addr,$time_iso8601,$upstream_url'
 ```
 
-⚠️ **必须显式配置 `log_format` 为逗号分隔的 3 列格式**。rtp2httpd 默认格式
+⚠️ **必须显式配置 `log_format` 为逗号分隔的 3 列格式，第 3 列用 `$upstream_url`**
+（上游组播地址，m3u 字典按它映射频道名）。rtp2httpd 默认格式
 `$client_addr [$time_iso8601] "$service_url" $service_type "$upstream_url"`
-带空格/引号/方括号，iptvstats **无法解析**。
+带空格/引号/方括号且列序不符，iptvstats **无法解析**。
+
+### m3u 字典（把组播地址映射成频道名）
+
+iptvstats 依赖一个 **m3u 文件做字典**：把日志第 3 列的 `rtp://<组播地址>` 显示成频道名。
+
+**路径**（自动探测，无需配置）：
+
+```
+日志同目录的 player.m3u   # 优先：access_log 在 /iptvweb/rtp2httpd-access.csv
+                          #      则读取 /iptvweb/player.m3u
+/iptvweb/player.m3u       # 回退路径
+```
+
+**格式**（标准 m3u）：`#EXTINF` 行写频道名，下一行写任一 `http://.../rtp/<组播地址>` 形式的
+播放地址，解析器提取 `/rtp/` 后的地址作为映射键：
+
+```
+#EXTINF:-1,CCTV-1 高清
+http://192.168.3.149:56309/rtp/228.1.1.174:4120?r2h-token=xxx
+#EXTINF:-1,凤凰卫视
+http://192.168.3.149:56309/rtp/228.1.1.175:4120
+```
+
+→ 日志出现 `rtp://228.1.1.174:4120` 时显示 **CCTV-1 高清**；字典里没有的地址显示原始
+`rtp://...` 地址。
 
 ## 仓库结构
 
