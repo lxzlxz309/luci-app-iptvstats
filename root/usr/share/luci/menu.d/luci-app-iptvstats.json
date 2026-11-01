@@ -1,0 +1,12 @@
+{
+  "admin/services/iptvstats": {
+    "title": "IPTV收视统计",
+    "action": {
+      "type": "view",
+      "path": "iptvstats"
+    },
+    "depends": {
+      "acl": ["luci-app-iptvstats"]
+    }
+  }
+}

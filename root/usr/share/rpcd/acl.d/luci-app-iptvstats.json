@@ -1,0 +1,10 @@
+{
+  "luci-app-iptvstats": {
+    "description": "Grant ubus access for luci-app-iptvstats",
+    "read": {
+      "ubus": {
+        "iptvstats": ["stats"]
+      }
+    }
+  }
+}

@@ -1,0 +1,207 @@
+#!/usr/bin/env ucode
+
+'use strict';
+
+import { readfile } from 'fs';
+
+// ========== 收视口径（与旧独立页 index.lua 一致，勿改） ==========
+// 精确段（4 字段停止行）：时长 = 停止时间 - 第4列开始时间；不过滤 60s、不设 7200s 上限
+// 推断段（未被精确段消费的开始行）：60s 阈值 / 7200s 上限 / 末条"看到现在"
+const THRESHOLD = 60;
+const MAX_DURATION = 7200;
+
+// 日志路径不写死：从 /etc/config/rtp2httpd 文本中提取所有 access_log（3.16/3.17
+// 多 section 都会覆盖），取第一个实际存在的文件；m3u 优先取日志同目录的 player.m3u
+function resolve_paths() {
+    const conf = readfile('/etc/config/rtp2httpd') ?? '';
+    let log = null;
+    const ls = split(conf, '\n');
+    for (let i = 0; i < length(ls); i++) {
+        const m = match(ls[i], /option\s+access_log\s+['"]([^'"]+)['"]/);
+        if (m && m[1] && readfile(m[1]) != null) {
+            log = m[1];
+            break;
+        }
+    }
+    if (log == null)
+        log = '/iptvweb/rtp2httpd-access.csv';
+
+    let m3u = null;
+    const slash = match(log, /^(.*)\/[^\/]+$/);
+    if (slash && slash[1])
+        m3u = slash[1] + '/player.m3u';
+    if (m3u == null || readfile(m3u) == null)
+        m3u = '/iptvweb/player.m3u';
+
+    return { log: log, m3u: m3u };
+}
+
+// floor((153*mp+2)/5)，mp = -2..9（避免负数除法语义差异）
+const MONTH_OFF = [-61, -31, 0, 31, 61, 92, 122, 153, 184, 214, 245, 275];
+
+function iso_to_epoch(s) {
+    s = trim(s);
+    const m = match(s, /^(\d+)-(\d+)-(\d+)T(\d+):(\d+):(\d+)([+-])(\d+):(\d+)$/);
+    if (!m)
+        return null;
+    const y = +m[1], mo = +m[2], d = +m[3], h = +m[4], mi = +m[5], se = +m[6];
+    const sign = m[7], tzh = +m[8], tzm = +m[9];
+    const y2 = y - (mo <= 2 ? 1 : 0);
+    const era = ~~(y2 / 400);
+    const yoe = y2 - era * 400;
+    const mp = mo + (mo > 2 ? -3 : 9);
+    const doy = MONTH_OFF[mp + 2] + d - 1;
+    const doe = yoe * 365 + ~~(yoe / 4) - ~~(yoe / 100) + doy;
+    const days = era * 146097 + doe - 719468;
+    let sec = days * 86400 + h * 3600 + mi * 60 + se;
+    const off = (tzh * 60 + tzm) * 60;
+    return sign === '-' ? sec + off : sec - off;
+}
+
+function clip(ip) {
+    const b = match(ip, /^(\[[^\]]+\])/);
+    if (b)
+        return b[1];
+    const m = match(ip, /^([^:]+):/);
+    return m ? m[1] : ip;
+}
+
+function build() {
+    const paths = resolve_paths();
+    const LOG = paths.log;
+    const M3U = paths.m3u;
+
+    // ① m3u -> rtp:// 映射
+    const m3u = readfile(M3U) ?? '';
+    const map = {};
+    let name = null;
+    const m3u_lines = split(replace(m3u, /\r/g, ''), '\n');
+    for (let i = 0; i < length(m3u_lines); i++) {
+        const line = m3u_lines[i];
+        if (match(line, /^(#EXTINF)/)) {
+            const m = match(line, /^.*,(.*)$/);
+            name = m ? m[1] : null;
+        }
+        else if (match(line, /^(http:\/\/.*\/rtp\/)/)) {
+            const m = match(line, /\/rtp\/([^?]+)/);
+            if (m && name)
+                map['rtp://' + m[1]] = name;
+        }
+    }
+
+    // ② 日志解析：3 字段=开始行；4 字段=停止行（第4列=会话开始时间）
+    const csv = readfile(LOG) ?? '';
+    const lines = split(replace(csv, /\r/g, ''), '\n');
+
+    const rows = [];
+    const by_ip = {};
+    const by_ip_chan = {};
+    const consumed = {};
+
+    for (let i = 0; i < length(lines); i++) {
+        const line = lines[i];
+        if (!line)
+            continue;
+        const p = split(line, ',');
+        if (length(p) < 3)
+            continue;
+        const ip = p[0];
+        const tm = p[1];
+        const url = p[2];
+        const start = (length(p) >= 4 && p[3]) ? p[3] : null;
+        const cip = clip(ip);
+        const rtp = match(url, /(rtp:\/\/[^?]+)/);
+        const chan = (rtp && map[rtp[1]]) ? map[rtp[1]] : url;
+        const t = iso_to_epoch(tm);
+        if (t == null)
+            continue;
+        const st = start ? iso_to_epoch(start) : null;
+        push(rows, { ip, cip, tm, t, chan, url, st });
+        if (st != null) {
+            // 精确段：时长 = 停止 - 开始
+            const dur = t - st;
+            if (dur > 0) {
+                const mm = by_ip_chan[cip] || (by_ip_chan[cip] = {});
+                mm[chan] = (mm[chan] || 0) + dur;
+                consumed[ip + '|' + url + '|' + st] = true;
+            }
+        }
+    }
+
+    const recs = [];
+    for (let i = 0; i < length(rows); i++) {
+        const r = rows[i];
+        if (r.st != null)
+            continue;
+        push(recs, [r.cip, r.tm, r.chan]);
+        if (!consumed[r.ip + '|' + r.url + '|' + r.t]) {
+            const grp = by_ip[r.cip] || (by_ip[r.cip] = []);
+            push(grp, { t: r.t, chan: r.chan });
+        }
+    }
+
+    // 访问数组按时间倒序（最新在最上）
+    sort(recs, function (a, b) {
+        return a[1] > b[1] ? -1 : (a[1] < b[1] ? 1 : 0);
+    });
+
+    // ③ 推断段聚合：相邻间隔>60s 取前置频道；末条距 now>60s 计"看到现在"
+    const now = time();
+    for (let ip in by_ip) {
+        const grp = by_ip[ip];
+        sort(grp, function (a, b) { return a.t - b.t; });
+        for (let i = 0; i < length(grp) - 1; i++) {
+            let dur = grp[i + 1].t - grp[i].t;
+            if (dur > THRESHOLD) {
+                if (dur > MAX_DURATION)
+                    dur = MAX_DURATION;
+                const mm = by_ip_chan[ip] || (by_ip_chan[ip] = {});
+                mm[grp[i].chan] = (mm[grp[i].chan] || 0) + dur;
+            }
+        }
+        const last = grp[length(grp) - 1];
+        let dur = now - last.t;
+        if (dur > THRESHOLD) {
+            if (dur > MAX_DURATION)
+                dur = MAX_DURATION;
+            const mm = by_ip_chan[ip] || (by_ip_chan[ip] = {});
+            mm[last.chan] = (mm[last.chan] || 0) + dur;
+        }
+    }
+
+    // shou_rows：IP 总时长降序 -> IP -> 秒 -> 频道名
+    const ip_tot = {};
+    for (let ip in by_ip_chan) {
+        let tot = 0;
+        for (let ch in by_ip_chan[ip])
+            tot += by_ip_chan[ip][ch];
+        ip_tot[ip] = tot;
+    }
+
+    const shou_rows = [];
+    for (let ip in by_ip_chan) {
+        for (let ch in by_ip_chan[ip])
+            push(shou_rows, [ip, by_ip_chan[ip][ch], ch]);
+    }
+    sort(shou_rows, function (a, b) {
+        if (ip_tot[a[0]] != ip_tot[b[0]])
+            return ip_tot[a[0]] > ip_tot[b[0]] ? -1 : 1;
+        if (a[0] != b[0])
+            return a[0] < b[0] ? -1 : 1;
+        if (a[1] != b[1])
+            return a[1] > b[1] ? -1 : 1;
+        return a[2] < b[2] ? -1 : 1;
+    });
+
+    return { raw: recs, shoushi: shou_rows };
+}
+
+const methods = {
+    stats: {
+        call: function () {
+            return build();
+        }
+    }
+};
+
+return { 'iptvstats': methods };
