@@ -4,11 +4,9 @@
 
 import { readfile } from 'fs';
 
-// ========== 收视口径（与旧独立页 index.lua 一致，勿改） ==========
-// 精确段（4 字段停止行）：时长 = 停止时间 - 第4列开始时间；不过滤 60s、不设 7200s 上限
-// 推断段（未被精确段消费的开始行）：60s 阈值 / 7200s 上限 / 末条"看到现在"
-const THRESHOLD = 60;
-const MAX_DURATION = 7200;
+// ========== 收视口径 ==========
+// 仅统计 4 字段停止行（第4列=会话开始时间）：时长 = 停止时间 - 第4列开始时间；
+// 3 字段开始行完全忽略（无断开时间的会话不计入统计，底部表格亦不展示）
 
 // 日志路径不写死：从 /etc/config/rtp2httpd 文本中提取所有 access_log（3.16/3.17
 // 多 section 都会覆盖），取第一个实际存在的文件；m3u 优先取日志同目录的 player.m3u
@@ -89,87 +87,54 @@ function build() {
         }
     }
 
-    // ② 日志解析：3 字段=开始行；4 字段=停止行（第4列=会话开始时间）
+    // ② 日志解析：仅处理 4 字段停止行（第4列=会话开始时间）；3 字段开始行忽略
     const csv = readfile(LOG) ?? '';
     const lines = split(replace(csv, /\r/g, ''), '\n');
 
     const rows = [];
-    const by_ip = {};
     const by_ip_chan = {};
-    const consumed = {};
 
     for (let i = 0; i < length(lines); i++) {
         const line = lines[i];
         if (!line)
             continue;
         const p = split(line, ',');
-        if (length(p) < 3)
+        // 只处理 4 字段停止行；3 字段开始行直接丢弃
+        if (length(p) < 4 || !p[3])
             continue;
         const ip = p[0];
         const tm = p[1];
         const url = p[2];
-        const start = (length(p) >= 4 && p[3]) ? p[3] : null;
+        const start = p[3];
         const cip = clip(ip);
         const rtp = match(url, /(rtp:\/\/[^?]+)/);
         const chan = (rtp && map[rtp[1]]) ? map[rtp[1]] : url;
         const t = iso_to_epoch(tm);
         if (t == null)
             continue;
-        const st = start ? iso_to_epoch(start) : null;
+        const st = iso_to_epoch(start);
+        if (st == null)
+            continue;
         push(rows, { ip, cip, tm, t, chan, url, st });
-        if (st != null) {
-            // 精确段：时长 = 停止 - 开始
-            const dur = t - st;
-            if (dur > 0) {
-                const mm = by_ip_chan[cip] || (by_ip_chan[cip] = {});
-                mm[chan] = (mm[chan] || 0) + dur;
-                consumed[ip + '|' + url + '|' + st] = true;
-            }
+        // 精确时长 = 停止时间 - 第4列开始时间
+        const dur = t - st;
+        if (dur > 0) {
+            const mm = by_ip_chan[cip] || (by_ip_chan[cip] = {});
+            mm[chan] = (mm[chan] || 0) + dur;
         }
     }
 
+    // 原始记录：全部 4 字段停止行（按时间倒序，最新在最上）
     const recs = [];
     for (let i = 0; i < length(rows); i++) {
         const r = rows[i];
-        if (r.st != null)
-            continue;
         push(recs, [r.cip, r.tm, r.chan]);
-        if (!consumed[r.ip + '|' + r.url + '|' + r.t]) {
-            const grp = by_ip[r.cip] || (by_ip[r.cip] = []);
-            push(grp, { t: r.t, chan: r.chan });
-        }
     }
-
-    // 访问数组按时间倒序（最新在最上）
     sort(recs, function (a, b) {
         return a[1] > b[1] ? -1 : (a[1] < b[1] ? 1 : 0);
     });
 
-    // ③ 推断段聚合：相邻间隔>60s 取前置频道；末条距 now>60s 计"看到现在"
-    const now = time();
-    for (let ip in by_ip) {
-        const grp = by_ip[ip];
-        sort(grp, function (a, b) { return a.t - b.t; });
-        for (let i = 0; i < length(grp) - 1; i++) {
-            let dur = grp[i + 1].t - grp[i].t;
-            if (dur > THRESHOLD) {
-                if (dur > MAX_DURATION)
-                    dur = MAX_DURATION;
-                const mm = by_ip_chan[ip] || (by_ip_chan[ip] = {});
-                mm[grp[i].chan] = (mm[grp[i].chan] || 0) + dur;
-            }
-        }
-        const last = grp[length(grp) - 1];
-        let dur = now - last.t;
-        if (dur > THRESHOLD) {
-            if (dur > MAX_DURATION)
-                dur = MAX_DURATION;
-            const mm = by_ip_chan[ip] || (by_ip_chan[ip] = {});
-            mm[last.chan] = (mm[last.chan] || 0) + dur;
-        }
-    }
-
-    // shou_rows：IP 总时长降序 -> IP -> 秒 -> 频道名
+    // ③ shou_rows：IP 总时长降序 -> IP -> 秒 -> 频道名
     const ip_tot = {};
     for (let ip in by_ip_chan) {
         let tot = 0;
