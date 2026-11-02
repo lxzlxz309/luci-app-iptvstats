@@ -231,12 +231,12 @@ function chanCntRows(items) {
 }
 
 function box(title, totalText, barItems, isDur, inCls, rows) {
-    return E("div", { "class": "ip-box" }, [
-        E("h2", {}, title),
-        totalText ? E("div", { "class": "ip-total" }, totalText) : null,
-        barRows(barItems, isDur, inCls),
-        rows
-    ]);
+    var children = [E("h2", {}, title)];
+    if (totalText)
+        children.push(E("div", { "class": "ip-total" }, totalText));
+    children.push(barRows(barItems, isDur, inCls));
+    children.push(rows);
+    return E("div", { "class": "ip-box" }, children);
 }
 
 // ===== 原始记录表（滚动 20 行可视，行号最新最大） =====
@@ -418,8 +418,8 @@ function renderPage(res) {
         ".ip-bar-fill-in{height:100%;background:#39b560;border-radius:6px}",
         ".ip-bar-fill-out{height:100%;background:#4488dd;border-radius:6px}",
         ".ip-bar-value{width:90px;min-width:90px;text-align:right;font-size:12px;color:#555}",
-        ".ip-item{padding:4px 0;font-size:15px;line-height:1.45;display:flex;gap:6px;align-items:center;flex-wrap:wrap;height:52px;overflow:hidden}",
-        ".ip-item-1{height:30px}",
+        ".ip-item{padding:4px 0;font-size:15px;line-height:1.45;display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-height:52px}",
+        ".ip-item-1{min-height:30px}",
         ".ip-link,.ip-link-shou{color:#0055cc;text-decoration:underline;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;display:inline-block;vertical-align:bottom}",
         ".ip-query-btn{font-size:12px;padding:1px 6px;border:1px solid #ccc;background:#eee;border-radius:4px;cursor:pointer;line-height:1.4}",
         ".ip-query-btn:disabled{background:#ddd;cursor:not-allowed}",
