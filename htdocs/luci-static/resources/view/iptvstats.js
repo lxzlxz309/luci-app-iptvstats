@@ -261,7 +261,7 @@ function rawSection(RAW_DATA) {
         btn.textContent = "隐藏原始访问记录";
         var tbl = E("table", { "class": "ip-raw-table" }, [
             E("thead", {}, E("tr", {}, [
-                E("th", {}, "#"), E("th", {}, "IP"), E("th", {}, "时间"), E("th", {}, "频道")
+                E("th", {}, "#"), E("th", {}, "IP"), E("th", {}, "开始时间"), E("th", {}, "频道"), E("th", {}, "收视时长")
             ]))
         ]);
         var tb = E("tbody", {});
@@ -270,7 +270,8 @@ function rawSection(RAW_DATA) {
                 E("td", {}, String(RAW_DATA.length - i)),
                 E("td", {}, RAW_DATA[i][0]),
                 E("td", {}, RAW_DATA[i][1]),
-                E("td", {}, RAW_DATA[i][2])
+                E("td", {}, RAW_DATA[i][2]),
+                E("td", {}, fmtDur(RAW_DATA[i][3]))
             ]));
         }
         tbl.appendChild(tb);

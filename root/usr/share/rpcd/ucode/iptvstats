@@ -115,7 +115,7 @@ function build() {
         const st = iso_to_epoch(start);
         if (st == null)
             continue;
-        push(rows, { ip, cip, tm, t, chan, url, st });
+        push(rows, { ip, cip, tm, t, chan, url, st, start: start });
         // 精确时长 = 停止时间 - 第4列开始时间
         const dur = t - st;
         if (dur > 0) {
@@ -124,15 +124,17 @@ function build() {
         }
     }
 
-    // 原始记录：全部 4 字段停止行（按时间倒序，最新在最上）
+    // 原始记录：全部 4 字段停止行（按会话开始时间倒序，最新开始的最上）
+    // 每行 = [IP, 开始时间, 频道, 收视时长秒]，时长 = 停止时间 - 第4列开始时间
+    sort(rows, function (a, b) {
+        return a.st > b.st ? -1 : (a.st < b.st ? 1 : 0);
+    });
     const recs = [];
     for (let i = 0; i < length(rows); i++) {
         const r = rows[i];
-        push(recs, [r.cip, r.tm, r.chan]);
+        const dur = r.t - r.st;
+        push(recs, [r.cip, r.start, r.chan, dur > 0 ? dur : 0]);
     }
-    sort(recs, function (a, b) {
-        return a[1] > b[1] ? -1 : (a[1] < b[1] ? 1 : 0);
-    });
 
     // ③ shou_rows：IP 总时长降序 -> IP -> 秒 -> 频道名
     const ip_tot = {};
